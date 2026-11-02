@@ -1,0 +1,203 @@
+// ReachInbox Email Scheduler — PostgreSQL is the source of truth.
+// Redis (BullMQ) holds execution state; Elasticsearch holds a derived search index.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Lifecycle: SCHEDULED -> SENDING -> SENT
+///                       \-> SCHEDULED (retryable SMTP error)
+///                       \-> FAILED    (permanent error / attempts exhausted)
+///            SCHEDULED -> CANCELLED (user action)
+enum EmailStatus {
+  SCHEDULED
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+enum OutboxOperation {
+  UPSERT
+  DELETE
+}
+
+enum AlertStatus {
+  PENDING
+  SENT
+  SKIPPED
+  FAILED
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  googleId  String   @unique
+  email     String   @unique
+  name      String
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  senders          EmailSender[]
+  campaigns        EmailCampaign[]
+  emails           Email[]
+  attachments      Attachment[]
+  slackIntegration SlackIntegration?
+}
+
+/// An SMTP identity (Ethereal account). Credentials are AES-256-GCM encrypted and never leave the backend.
+model EmailSender {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @db.Uuid
+  name              String
+  email             String
+  smtpHost          String
+  smtpPort          Int
+  smtpSecure        Boolean  @default(false)
+  smtpUser          String
+  smtpPassEncrypted String
+  /// Independent per-sender hourly cap (further capped by MAX_EMAILS_PER_HOUR_PER_SENDER).
+  hourlyLimit       Int
+  /// Independent per-sender minimum spacing (floored by MIN_EMAIL_DELAY_MS).
+  minDelayMs        Int
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaigns       EmailCampaign[]
+  emails          Email[]
+  rateLimitAlerts RateLimitAlert[]
+
+  @@unique([userId, email])
+  @@index([userId])
+}
+
+/// One "Send Later" submission. Fans out into one Email row (and one BullMQ job) per recipient.
+model EmailCampaign {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @db.Uuid
+  senderId        String   @db.Uuid
+  subject         String
+  bodyHtml        String   @db.Text
+  bodyText        String   @db.Text
+  startAt         DateTime
+  /// Optional per-campaign overrides (stricter than sender settings only).
+  delayMs         Int?
+  hourlyLimit     Int?
+  totalRecipients Int
+  /// Client-generated key; duplicate submissions return the original campaign.
+  idempotencyKey  String
+  createdAt       DateTime @default(now())
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sender      EmailSender  @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  emails      Email[]
+  attachments Attachment[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+}
+
+model Email {
+  id               String      @id @db.Uuid
+  campaignId       String      @db.Uuid
+  userId           String      @db.Uuid
+  senderId         String      @db.Uuid
+  recipient        String
+  status           EmailStatus @default(SCHEDULED)
+  /// Requested send time (start time + position * delay).
+  scheduledAt      DateTime
+  /// Set when the rate limiter pushed the email into a later hour.
+  deferredUntil    DateTime?
+  sendingStartedAt DateTime?
+  sentAt           DateTime?
+  failedAt         DateTime?
+  attempts         Int         @default(0)
+  lastError        String?
+  /// Deterministic RFC 5322 Message-ID, identical across retries so receivers can de-duplicate.
+  messageId        String      @unique
+  smtpResponse     String?
+  /// Ethereal web preview URL for the delivered message.
+  previewUrl       String?
+  isStarred        Boolean     @default(false)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  campaign EmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sender   EmailSender   @relation(fields: [senderId], references: [id], onDelete: Restrict)
+
+  @@unique([campaignId, recipient])
+  @@index([userId, status, scheduledAt])
+  @@index([userId, status, updatedAt])
+  @@index([senderId, status])
+  @@index([status, scheduledAt])
+}
+
+model Attachment {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  campaignId  String?  @db.Uuid
+  filename    String
+  mimeType    String
+  size        Int
+  storagePath String
+  createdAt   DateTime @default(now())
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign EmailCampaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([campaignId])
+}
+
+model SlackIntegration {
+  id                   String   @id @default(uuid()) @db.Uuid
+  userId               String   @unique @db.Uuid
+  teamId               String
+  teamName             String?
+  channelId            String?
+  channelName          String?
+  botUserId            String?
+  scope                String
+  accessTokenEncrypted String
+  webhookUrlEncrypted  String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Durable de-duplication of "hourly limit reached" Slack alerts: one row per sender per hour.
+model RateLimitAlert {
+  id         String      @id @default(uuid()) @db.Uuid
+  senderId   String      @db.Uuid
+  hourBucket Int
+  status     AlertStatus @default(PENDING)
+  error      String?
+  createdAt  DateTime    @default(now())
+  sentAt     DateTime?
+
+  sender EmailSender @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, hourBucket])
+}
+
+/// Transactional outbox: written in the same transaction as Email changes, drained into Elasticsearch.
+model SearchOutbox {
+  id          Int             @id @default(autoincrement())
+  emailId     String          @db.Uuid
+  operation   OutboxOperation @default(UPSERT)
+  attempts    Int             @default(0)
+  lastError   String?
+  createdAt   DateTime        @default(now())
+  processedAt DateTime?
+
+  @@index([processedAt, id])
+}
