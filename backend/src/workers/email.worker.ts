@@ -96,6 +96,20 @@ export async function processEmailJob(job: Job<EmailJobData>, token?: string): P
   // Short wait (incl. delayed-job promotion jitter): never start before the reserved slot.
   if (wait > 0) await sleep(wait);
 
+  // Attachments come from Postgres (content) or, for older uploads, from the local disk (storagePath).
+  const missing = campaign.attachments.find((a) => !a.content && !a.storagePath);
+  if (missing) {
+    await rateLimiter.releaseSendSlot(sender.id, emailId).catch(() => undefined);
+    const reason = `Attachment ${missing.filename} has no stored content`;
+    await markFailed(emailId, reason);
+    throw new UnrecoverableError(reason);
+  }
+  const attachments = campaign.attachments.map((a) =>
+    a.content
+      ? { filename: a.filename, contentType: a.mimeType, content: Buffer.from(a.content) }
+      : { filename: a.filename, contentType: a.mimeType, path: path.resolve(a.storagePath!) },
+  );
+
   // --- 4. Claim ---------------------------------------------------------------------------------
   // BullMQ's job lock guarantees a single active processor per job, so re-claiming a row left in
   // SENDING is only possible after a crash/stall of the previous attempt (see README: delivery
@@ -116,11 +130,7 @@ export async function processEmailJob(job: Job<EmailJobData>, token?: string): P
       text: campaign.bodyText,
       messageId: email.messageId,
       headers: { 'X-ReachInbox-Email-Id': email.id, 'X-ReachInbox-Campaign-Id': campaign.id },
-      attachments: campaign.attachments.map((a) => ({
-        filename: a.filename,
-        path: path.resolve(a.storagePath),
-        contentType: a.mimeType,
-      })),
+      attachments,
     });
   } catch (err) {
     await rateLimiter.releaseSendSlot(sender.id, emailId).catch(() => undefined);

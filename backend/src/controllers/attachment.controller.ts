@@ -14,8 +14,9 @@ export async function upload(req: Request, res: Response): Promise<void> {
           filename: f.originalname,
           mimeType: f.mimetype,
           size: f.size,
-          storagePath: f.path,
+          content: new Uint8Array(f.buffer),
         },
+        select: { id: true, filename: true, mimeType: true, size: true },
       }),
     ),
   );
@@ -32,7 +33,7 @@ export async function upload(req: Request, res: Response): Promise<void> {
 
 export async function download(req: Request, res: Response): Promise<void> {
   const attachment = await prisma.attachment.findFirst({ where: { id: req.params.id!, userId: req.user!.id } });
-  if (!attachment) throw notFound('Attachment not found');
+  if (!attachment || (!attachment.content && !attachment.storagePath)) throw notFound('Attachment not found');
   const inline = attachment.mimeType.startsWith('image/');
   res.setHeader('Content-Type', attachment.mimeType);
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -40,5 +41,10 @@ export async function download(req: Request, res: Response): Promise<void> {
     'Content-Disposition',
     `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(attachment.filename)}"`,
   );
-  res.sendFile(path.resolve(attachment.storagePath));
+  if (attachment.content) {
+    res.end(Buffer.from(attachment.content));
+    return;
+  }
+  // Attachment uploaded before contents moved to Postgres: still served from the local disk.
+  res.sendFile(path.resolve(attachment.storagePath!));
 }

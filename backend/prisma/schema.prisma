@@ -147,7 +147,10 @@ model Attachment {
   filename    String
   mimeType    String
   size        Int
-  storagePath String
+  /// Legacy: file on the API's local disk (attachments uploaded before contents moved to Postgres).
+  storagePath String?
+  /// File contents. Stored in Postgres so the API and a worker on another machine can both read them.
+  content     Bytes?
   createdAt   DateTime @default(now())
 
   user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)

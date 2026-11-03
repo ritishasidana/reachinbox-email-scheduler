@@ -10,6 +10,8 @@
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
+    "worker:once": "node dist/worker-once.js",
+    "dev:worker:once": "tsx src/worker-once.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",

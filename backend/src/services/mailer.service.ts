@@ -37,7 +37,8 @@ export interface OutgoingMessage {
   text: string;
   messageId: string;
   headers?: Record<string, string>;
-  attachments?: { filename: string; path: string; contentType: string }[];
+  /** Either `content` (stored in Postgres) or `path` (legacy file on local disk). */
+  attachments?: { filename: string; contentType: string; content?: Buffer; path?: string }[];
 }
 
 export interface SendResult {

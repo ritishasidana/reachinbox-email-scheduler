@@ -14,6 +14,7 @@ A full-stack email scheduling platform: authenticated users compose a message, u
 5. [Quick Start](#quick-start)
 6. [Environment Configuration](#environment-configuration)
 7. [External Setup: Ethereal, Google, Slack, Elasticsearch](#external-setup)
+8. [Free Deployment (₹0)](#free-deployment-0-vercel--render--neon--upstash--github-actions)
 8. [API Reference](#api-reference)
 9. [How the Queue Works](#queue-architecture)
 10. [Rate Limiting & Spacing](#rate-limiting-and-spacing)
@@ -222,6 +223,19 @@ The OAuth `state` is HMAC-signed, expiring and single-use (nonce in Redis), so t
 
 ### Elasticsearch
 Started by Docker Compose (single node, security disabled for local dev). The `emails` index (explicit mapping: recipient, subject, body, status, sender, scheduledAt, sentAt, …) is created automatically at startup. If Elasticsearch is down, the API still starts and search falls back to a Postgres `ILIKE` query (the response says `"source": "database"`).
+
+## Free deployment (₹0): Vercel + Render + Neon + Upstash + GitHub Actions
+
+| Part | Host (free plan, no card) | Notes |
+|---|---|---|
+| React frontend | Vercel Hobby | `frontend/vercel.json` forwards `/api/*` and `/admin/*` to Render, so the session cookie stays first-party; every other path serves `index.html` (React Router) |
+| Express API | Render free web service | Sleeps after 15 min idle (~1 min wake-up); **outbound SMTP is blocked**, so the API never sends email; workers are off (`RUN_WORKERS_IN_API` defaults to `false` when `NODE_ENV=production`) |
+| PostgreSQL | Neon free | Data and **attachment contents** (stored in Postgres so the API and the worker can both read them) |
+| Redis | Upstash free | Sessions, BullMQ jobs, rate-limit counters; durable, so jobs survive restarts |
+| Email worker | GitHub Actions (`.github/workflows/email-worker.yml`) | Every 30 min and on demand (*Run workflow*): `npm run worker:once` exits within seconds if nothing is due, otherwise sends due emails over Ethereal SMTP, posts Slack alerts, and exits when idle |
+| Search | — | No free Elasticsearch; search falls back to Postgres. Elasticsearch still works locally with Docker Compose |
+
+Trade-offs on the free stack: emails go out at the next worker run (up to ~30 min after their scheduled time, longer if GitHub delays the schedule); press *Run workflow* for an immediate run. Overlapping runs are safe (BullMQ job locks, conditional DB claims, atomic Redis reservations) and the workflow also allows only one run at a time. Migrations run with `prisma migrate deploy` in Render's start command, which applies pending migrations and never resets data.
 
 ## API reference
 

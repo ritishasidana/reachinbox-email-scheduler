@@ -47,7 +47,14 @@ const schema = z.object({
   EMAIL_JOB_BACKOFF_MS: z.coerce.number().int().min(100).default(10_000),
   RATE_LIMIT_LOOKAHEAD_HOURS: z.coerce.number().int().min(1).max(24 * 31).default(168),
   MAX_RECIPIENTS_PER_CAMPAIGN: z.coerce.number().int().min(1).default(10_000),
-  RUN_WORKERS_IN_API: booleanFlag('true'),
+  // Unset -> true in development, false in production (production runs workers separately).
+  RUN_WORKERS_IN_API: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === 'true')),
+  // One-shot worker (src/worker-once.ts, e.g. on a GitHub Actions schedule).
+  WORKER_ONCE_MAX_MS: z.coerce.number().int().min(10_000).default(10 * 60_000),
+  WORKER_ONCE_LOOKAHEAD_MS: z.coerce.number().int().min(0).default(2 * 60_000),
 
   ETHEREAL_SMTP_HOST: z.string().default('smtp.ethereal.email'),
   ETHEREAL_SMTP_PORT: z.coerce.number().int().default(587),
@@ -78,7 +85,10 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const env = parsed.data;
+export const env = {
+  ...parsed.data,
+  RUN_WORKERS_IN_API: parsed.data.RUN_WORKERS_IN_API ?? parsed.data.NODE_ENV !== 'production',
+};
 export type Env = typeof env;
 
 export const isProduction = env.NODE_ENV === 'production';

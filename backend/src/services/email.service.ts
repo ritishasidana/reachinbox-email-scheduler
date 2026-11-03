@@ -332,7 +332,8 @@ export async function getEmailDetail(userId: string, emailId: string) {
   const email = await prisma.email.findFirst({
     where: { id: emailId, userId },
     include: {
-      campaign: { include: { attachments: true } },
+      // Metadata only: never load attachment contents (stored in Postgres) just to render the page.
+      campaign: { include: { attachments: { select: { id: true, filename: true, mimeType: true, size: true } } } },
       sender: { select: { id: true, name: true, email: true } },
     },
   });
