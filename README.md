@@ -5,6 +5,13 @@ A full-stack email scheduling platform: authenticated users compose a message, u
 > Built for the ReachInbox (Outbox Labs) Software Development Intern assignment.
 
 ---
+## Demo Video
+
+**Watch the ReachInbox Email Scheduler Demo:**
+[https://drive.google.com/file/d/1uHWmbYf1q3Z61tTOYhet53TSo9FTE0ae/view?usp=sharing](https://drive.google.com/file/d/1uHWmbYf1q3Z61tTOYhet53TSo9FTE0ae/view?usp=sharing)
+
+---
+
 ## Contents
 
 1. [Key Features](#key-features)
