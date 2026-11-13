@@ -51,7 +51,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: backend
-        run: npm ci
+        run: npm ci --include=dev
 
       - name: Build (prisma generate + tsc)
         working-directory: backend
